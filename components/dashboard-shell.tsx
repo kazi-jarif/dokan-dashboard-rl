@@ -16,7 +16,7 @@ const items = [
 ]
 
 export function DashboardShell({ children, title, email }: { children: React.ReactNode; title: string; email?: string }) {
-  const pathname = usePathname(); const router = useRouter(); const [dark, setDark] = useState(false); const [open, setOpen] = useState(false)
+  const pathname = usePathname(); const router = useRouter(); const [dark, setDark] = useState(false); const [open, setOpen] = useState<boolean | 'user'>(false)
   useEffect(() => { document.documentElement.classList.toggle('dark', dark) }, [dark])
   async function logout() { await createClient().auth.signOut(); router.push('/login') }
   return <div className="min-h-screen bg-background lg:flex">
