@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { DashboardShell } from '@/components/dashboard-shell'
 import { EmptyState } from '@/components/empty-state'
@@ -15,7 +15,7 @@ function errorText(error: { message?: string; status?: number } | null) { return
 function filePathFromUrl(url: string | null) { if (!url) return null; try { const marker = '/product-images/'; const index = url.indexOf(marker); return index >= 0 ? decodeURIComponent(url.slice(index + marker.length).split('?')[0]) : null } catch { return null } }
 
 export default function ProductsPage() {
-  const supabase = useMemo(() => createClient(), [])
+  const [supabase, setSupabase] = useState<ReturnType<typeof createClient> | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -30,12 +30,14 @@ export default function ProductsPage() {
 
   const notify = useCallback((type: 'success' | 'error', message: string) => { setToast({ type, message }); window.setTimeout(() => setToast(null), 4200) }, [])
   const fetchProducts = useCallback(async () => {
+    if (!supabase) return
     setLoading(true); setError(null)
     const { data, error } = await supabase.from('products').select('id,name,description,price,stock,image_url,offers').order('id', { ascending: false })
     if (error) { setError(errorText(error)); notify('error', errorText(error)) } else setProducts((data ?? []) as Product[])
     setLoading(false)
   }, [notify, supabase])
-  useEffect(() => { fetchProducts(); const channel = supabase.channel('products-realtime').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, fetchProducts).subscribe(); return () => { supabase.removeChannel(channel); Object.values(stockTimers.current).forEach(clearTimeout) } }, [fetchProducts, supabase])
+  useEffect(() => { setSupabase(createClient()) }, [])
+  useEffect(() => { if (!supabase) return; fetchProducts(); const channel = supabase.channel('products-realtime').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, fetchProducts).subscribe(); return () => { supabase.removeChannel(channel); Object.values(stockTimers.current).forEach(clearTimeout) } }, [fetchProducts, supabase])
 
   const filtered = products.filter((product) => product.name.toLowerCase().includes(query.toLowerCase()))
   function openAdd() { setEditing(null); setForm(emptyForm); setFormOpen(true) }
@@ -43,7 +45,7 @@ export default function ProductsPage() {
   function chooseImage(file: File | undefined) { if (!file) return; const allowed = ['image/jpeg', 'image/png', 'image/webp']; if (!allowed.includes(file.type)) { notify('error', 'Image must be JPG, PNG, or WebP.'); return } if (file.size > 3 * 1024 * 1024) { notify('error', 'Image must be smaller than 3 MB.'); return } setForm((current) => ({ ...current, image: file, preview: URL.createObjectURL(file) })) }
   function addOffer() { const offer = form.offerInput.trim(); if (offer && !form.offers.includes(offer)) setForm({ ...form, offers: [...form.offers, offer], offerInput: '' }) }
   async function saveProduct(event: React.FormEvent) {
-    event.preventDefault(); const price = Number(form.price); const stock = Number(form.stock)
+    event.preventDefault(); if (!supabase) return; const price = Number(form.price); const stock = Number(form.stock)
     if (!form.name.trim() || !Number.isFinite(price) || price < 0 || !Number.isInteger(stock) || stock < 0) { notify('error', 'Enter a name, a valid non-negative price, and a whole-number stock.'); return }
     setSaving(true)
     try {
@@ -56,8 +58,8 @@ export default function ProductsPage() {
       await fetchProducts(); setFormOpen(false); notify('success', editing ? 'Product updated.' : 'Product added.')
     } catch (caught) { const message = errorText(caught as { message?: string; status?: number }); notify('error', message) } finally { setSaving(false) }
   }
-  function changeStock(product: Product, delta: number) { const next = Math.max(0, product.stock + delta); setProducts((current) => current.map((item) => item.id === product.id ? { ...item, stock: next } : item)); clearTimeout(stockTimers.current[product.id]); stockTimers.current[product.id] = setTimeout(async () => { const result = await supabase.from('products').update({ stock: next }).eq('id', product.id); if (result.error) notify('error', errorText(result.error)); else { await fetchProducts(); notify('success', 'Stock updated.') } }, 450) }
-  async function deleteProduct() { if (!deleting) return; const product = deleting; setDeleting(null); const result = await supabase.from('products').delete().eq('id', product.id); if (result.error) { notify('error', errorText(result.error)); return } const path = filePathFromUrl(product.image_url); if (path) await supabase.storage.from('product-images').remove([path]); await fetchProducts(); notify('success', 'Product deleted.') }
+  function changeStock(product: Product, delta: number) { if (!supabase) return; const next = Math.max(0, product.stock + delta); setProducts((current) => current.map((item) => item.id === product.id ? { ...item, stock: next } : item)); clearTimeout(stockTimers.current[product.id]); stockTimers.current[product.id] = setTimeout(async () => { const result = await supabase.from('products').update({ stock: next }).eq('id', product.id); if (result.error) notify('error', errorText(result.error)); else { await fetchProducts(); notify('success', 'Stock updated.') } }, 450) }
+  async function deleteProduct() { if (!supabase || !deleting) return; const product = deleting; setDeleting(null); const result = await supabase.from('products').delete().eq('id', product.id); if (result.error) { notify('error', errorText(result.error)); return } const path = filePathFromUrl(product.image_url); if (path) await supabase.storage.from('product-images').remove([path]); await fetchProducts(); notify('success', 'Product deleted.') }
 
   return <DashboardShell title="Products"><div className="flex flex-col gap-6">
     {toast && <div role="status" className={`fixed right-4 top-4 z-50 flex max-w-sm items-start gap-3 rounded-xl border px-4 py-3 text-sm shadow-lg ${toast.type === 'error' ? 'border-destructive/30 bg-destructive/10 text-destructive' : 'border-primary/30 bg-primary/10 text-primary'}`}><span>{toast.message}</span><button aria-label="Dismiss notification" onClick={() => setToast(null)}><X className="size-4" /></button></div>}

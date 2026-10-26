@@ -1,0 +1,21 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+import { Bell, BellOff, Send } from 'lucide-react'
+
+function base64UrlToUint8Array(value: string) {
+  const padding = '='.repeat((4 - value.length % 4) % 4)
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/')
+  return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+}
+
+export function PushSettings() {
+  const [status, setStatus] = useState<'Not supported' | 'Blocked' | 'Off' | 'On'>('Not supported')
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  useEffect(() => { if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return; setStatus(Notification.permission === 'denied' ? 'Blocked' : 'Off'); setHint(/iPhone|iPad|iPod/.test(navigator.userAgent) && !window.matchMedia('(display-mode: standalone)').matches ? 'On iPhone, first tap Share > Add to Home Screen, then open Dokan from the home screen and enable notifications.' : '') }, [])
+  async function enable() { setBusy(true); try { const registration = await navigator.serviceWorker.register('/sw.js'); const permission = await Notification.requestPermission(); if (permission !== 'granted') { setStatus(permission === 'denied' ? 'Blocked' : 'Off'); throw new Error(permission === 'denied' ? 'Notifications are blocked in your browser settings.' : 'Notification permission was not granted.') } const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToUint8Array(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!) }); const response = await fetch('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(subscription) }); if (!response.ok) throw new Error((await response.json()).error || 'Unable to save subscription'); setStatus('On') } catch (error) { window.alert(error instanceof Error ? error.message : 'Unable to enable notifications') } finally { setBusy(false) } }
+  async function disable() { setBusy(true); try { const registration = await navigator.serviceWorker.getRegistration('/'); const subscription = await registration?.pushManager.getSubscription(); if (subscription) { await fetch('/api/push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: subscription.endpoint }) }); await subscription.unsubscribe() } setStatus('Off') } catch (error) { window.alert(error instanceof Error ? error.message : 'Unable to disable notifications') } finally { setBusy(false) } }
+  async function test() { setBusy(true); try { const response = await fetch('/api/push/test', { method: 'POST' }); if (!response.ok) throw new Error((await response.json()).error || 'Unable to send test notification') } catch (error) { window.alert(error instanceof Error ? error.message : 'Unable to send test notification') } finally { setBusy(false) } }
+  return <section className="rounded-2xl border border-border bg-card p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><p className="text-base font-semibold">Push notifications</p><p className="mt-1 text-sm text-muted-foreground">Status: <span className="font-medium text-foreground">{status}</span></p></div><div className="grid size-10 place-items-center rounded-xl bg-primary/10 text-primary">{status === 'On' ? <Bell /> : <BellOff />}</div></div>{hint && <p className="mt-4 rounded-xl bg-muted p-3 text-xs leading-5 text-muted-foreground">{hint}</p>}<div className="mt-5 flex flex-wrap gap-2"><button disabled={busy || status === 'On' || status === 'Blocked'} onClick={enable} className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-50">Enable notifications</button><button disabled={busy || status !== 'On'} onClick={disable} className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium disabled:opacity-50">Disable</button><button disabled={busy || status !== 'On'} onClick={test} className="flex items-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm font-medium disabled:opacity-50"><Send className="size-4" />Send test notification</button></div></section>
+}

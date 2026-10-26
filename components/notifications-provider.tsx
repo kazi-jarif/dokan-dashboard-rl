@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
 type NotificationType = 'confirmed' | 'cancelled' | 'complaint'
@@ -12,12 +12,17 @@ const TYPES: NotificationType[] = ['confirmed', 'cancelled', 'complaint']
 
 export function NotificationsProvider({ children }: { children: React.ReactNode }) {
   const [unreadCount, setUnreadCount] = useState(0)
-  const supabase = useMemo(() => createClient(), [])
+  const [supabase, setSupabase] = useState<ReturnType<typeof createClient> | null>(null)
   const refreshUnread = async () => {
+    if (!supabase) return
     const { count } = await supabase.from('notifications').select('id', { count: 'exact', head: true }).eq('read', false).in('type', TYPES)
     if (typeof count === 'number') setUnreadCount(count)
   }
   useEffect(() => {
+    setSupabase(createClient())
+  }, [])
+  useEffect(() => {
+    if (!supabase) return
     void refreshUnread()
     const channel = supabase.channel('notifications-sidebar').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload: { new: Notification; old: Notification }) => {
       const row = payload.new as Notification
