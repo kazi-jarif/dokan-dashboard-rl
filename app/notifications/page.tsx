@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Bell, Check, CheckCircle2, Clock3, Loader2, MessageCircleWarning, RefreshCw, XCircle } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { DashboardShell } from '@/components/dashboard-shell'
@@ -18,19 +18,21 @@ const PAGE_SIZE = 100
 
 function relativeTime(date: string) { const seconds = Math.max(0, (Date.now() - new Date(date).getTime()) / 1000); if (seconds < 60) return 'Just now'; if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`; if (seconds < 86400) return `${Math.floor(seconds / 3600)} hr ago`; if (seconds < 604800) return `${Math.floor(seconds / 86400)} days ago`; return new Date(date).toLocaleDateString() }
 function exactTime(date: string) { return new Intl.DateTimeFormat('en-BD', { timeZone: 'Asia/Dhaka', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(date)) }
+function dedupe(items: Notification[]) { return Array.from(new Map(items.map((item) => [item.id, item])).values()) }
 
 export default function NotificationsPage() {
-  const [supabase, setSupabase] = useState<ReturnType<typeof createClient> | null>(null)
-  const { refreshUnread } = useNotifications()
+  const supabase = useRef(createClient()).current
+  const { refreshUnread, onNotificationChange } = useNotifications()
   const [active, setActive] = useState<NotificationType>('confirmed')
   const [rows, setRows] = useState<Record<NotificationType, Notification[]>>({ confirmed: [], cancelled: [], complaint: [] })
+  const rowsRef = useRef(rows)
   const [counts, setCounts] = useState<Record<NotificationType, number>>({ confirmed: 0, cancelled: 0, complaint: 0 })
+  const [loaded, setLoaded] = useState<Record<NotificationType, boolean>>({ confirmed: false, cancelled: false, complaint: false })
   const [loading, setLoading] = useState(true); const [loadingMore, setLoadingMore] = useState(false); const [saving, setSaving] = useState<number | 'all' | null>(null); const [error, setError] = useState<string | null>(null)
-  const load = useCallback(async (type: NotificationType, more = false) => { if (!supabase) return; more ? setLoadingMore(true) : setLoading(true); setError(null); const from = more ? rows[type].length : 0; const { data, error: fetchError } = await supabase.from('notifications').select('id,type,title,body,data,read,created_at').eq('type', type).order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1); if (fetchError) setError(fetchError.message); else setRows((current) => ({ ...current, [type]: more ? [...current[type], ...(data as Notification[])] : (data as Notification[]) })); more ? setLoadingMore(false) : setLoading(false) }, [rows, supabase])
-  const loadCount = useCallback(async (type: NotificationType) => { if (!supabase) return; const { count } = await supabase.from('notifications').select('id', { count: 'exact', head: true }).eq('type', type).eq('read', false); if (typeof count === 'number') setCounts((current) => ({ ...current, [type]: count })) }, [supabase])
-  useEffect(() => { setSupabase(createClient()) }, [])
-  useEffect(() => { if (!supabase) return; void load(active); void loadCount(active) }, [active, supabase, load, loadCount])
-  useEffect(() => { if (!supabase) return; const channel = supabase.channel('notifications-page').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload: { new: Notification; old: Notification }) => { const row = payload.new as Notification; if (tabs.some((tab) => tab.type === row.type)) { setRows((current) => ({ ...current, [row.type]: [row, ...current[row.type]] })); if (!row.read) setCounts((current) => ({ ...current, [row.type]: current[row.type] + 1 })) } }).on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notifications' }, (payload: { new: Notification; old: Notification }) => { const row = payload.new as Notification; if (!tabs.some((tab) => tab.type === row.type)) return; setRows((current) => ({ ...current, [row.type]: current[row.type].map((item) => item.id === row.id ? row : item) })); void loadCount(row.type) }).subscribe(); return () => { void supabase.removeChannel(channel) } }, [loadCount, supabase])
+  const load = useCallback(async (type: NotificationType, more = false) => { if (!more && loaded[type]) return; more ? setLoadingMore(true) : setLoading(true); setError(null); const from = more ? rowsRef.current[type].length : 0; const { data, error: fetchError } = await supabase.from('notifications').select('id,type,title,body,data,read,created_at').eq('type', type).order('created_at', { ascending: false }).range(from, from + PAGE_SIZE - 1); if (fetchError) setError(fetchError.message); else { setRows((current) => { const next = { ...current, [type]: more ? dedupe([...current[type], ...(data as Notification[])]) : dedupe(data as Notification[]) }; rowsRef.current = next; return next }); setLoaded((current) => ({ ...current, [type]: true })) }; more ? setLoadingMore(false) : setLoading(false) }, [loaded, supabase])
+  const loadCount = useCallback(async (type: NotificationType) => { const { count } = await supabase.from('notifications').select('id', { count: 'exact', head: true }).eq('type', type).eq('read', false); if (typeof count === 'number') setCounts((current) => ({ ...current, [type]: count })) }, [supabase])
+  useEffect(() => { void load(active); void loadCount(active) }, [active, load, loadCount])
+  useEffect(() => onNotificationChange(({ event, row }) => { setRows((current) => { const next = { ...current, [row.type]: event === 'INSERT' ? dedupe([row, ...current[row.type]]) : current[row.type].map((item) => item.id === row.id ? row : item) }; rowsRef.current = next; return next }); if (event === 'INSERT' && !row.read) setCounts((current) => ({ ...current, [row.type]: current[row.type] + 1 })); if (event === 'UPDATE') void loadCount(row.type) }), [loadCount, onNotificationChange])
   async function markRead(id: number) { if (!supabase) return; setSaving(id); const { error: updateError } = await supabase.from('notifications').update({ read: true }).eq('id', id); if (updateError) setError(updateError.message); else { setRows((current) => ({ ...current, [active]: current[active].map((item) => item.id === id ? { ...item, read: true } : item) })); await loadCount(active); await refreshUnread() } setSaving(null) }
   async function markAll() { if (!supabase) return; setSaving('all'); const { error: updateError } = await supabase.from('notifications').update({ read: true }).eq('type', active).eq('read', false); if (updateError) setError(updateError.message); else { setRows((current) => ({ ...current, [active]: current[active].map((item) => ({ ...item, read: true })) })); setCounts((current) => ({ ...current, [active]: 0 })); await refreshUnread() } setSaving(null) }
   const items = rows[active]; const canLoadMore = items.length >= PAGE_SIZE
