@@ -1,6 +1,7 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import './globals.css'
+import { NotificationsProvider } from '@/components/notifications-provider'
 
 export const metadata: Metadata = {
   title: 'Dokan Dashboard',
@@ -41,7 +42,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
-        {children}
+        <NotificationsProvider>{children}</NotificationsProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
