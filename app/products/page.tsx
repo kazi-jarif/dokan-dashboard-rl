@@ -29,15 +29,37 @@ export default function ProductsPage() {
   const stockTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
 
   const notify = useCallback((type: 'success' | 'error', message: string) => { setToast({ type, message }); window.setTimeout(() => setToast(null), 4200) }, [])
-  const fetchProducts = useCallback(async () => {
+  const fetchProducts = useCallback(async (showLoading = true) => {
     if (!supabase) return
-    setLoading(true); setError(null)
+    if (showLoading) setLoading(true)
+    setError(null)
     const { data, error } = await supabase.from('products').select('id,name,description,price,stock,image_url,offers').order('id', { ascending: false })
     if (error) { setError(errorText(error)); notify('error', errorText(error)) } else setProducts((data ?? []) as Product[])
-    setLoading(false)
+    if (showLoading) setLoading(false)
   }, [notify, supabase])
+  const refreshProducts = useCallback(() => fetchProducts(false), [fetchProducts])
   useEffect(() => { setSupabase(createClient()) }, [])
-  useEffect(() => { if (!supabase) return; fetchProducts(); const channel = supabase.channel('products-realtime').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, fetchProducts).subscribe(); return () => { supabase.removeChannel(channel); Object.values(stockTimers.current).forEach(clearTimeout) } }, [fetchProducts, supabase])
+  useEffect(() => {
+    if (!supabase) return
+    void fetchProducts()
+    const channel = supabase
+      .channel('products-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'products' }, refreshProducts)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, refreshProducts)
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'products' }, refreshProducts)
+      .subscribe()
+    const refreshWhenActive = () => {
+      if (document.visibilityState === 'visible') void refreshProducts()
+    }
+    document.addEventListener('visibilitychange', refreshWhenActive)
+    window.addEventListener('focus', refreshWhenActive)
+    return () => {
+      document.removeEventListener('visibilitychange', refreshWhenActive)
+      window.removeEventListener('focus', refreshWhenActive)
+      void supabase.removeChannel(channel)
+      Object.values(stockTimers.current).forEach(clearTimeout)
+    }
+  }, [fetchProducts, refreshProducts, supabase])
 
   const filtered = products.filter((product) => product.name.toLowerCase().includes(query.toLowerCase()))
   function openAdd() { setEditing(null); setForm(emptyForm); setFormOpen(true) }
@@ -65,7 +87,7 @@ export default function ProductsPage() {
     {toast && <div role="status" className={`fixed right-4 top-4 z-50 flex max-w-sm items-start gap-3 rounded-xl border px-4 py-3 text-sm shadow-lg ${toast.type === 'error' ? 'border-destructive/30 bg-destructive/10 text-destructive' : 'border-primary/30 bg-primary/10 text-primary'}`}><span>{toast.message}</span><button aria-label="Dismiss notification" onClick={() => setToast(null)}><X className="size-4" /></button></div>}
     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm text-muted-foreground">Manage your storefront inventory</p></div><button onClick={openAdd} className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground"><Plus className="size-4" /> Add product</button></div>
     <div className="relative"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search products" className="h-11 w-full rounded-lg border bg-background pl-10 pr-4 text-sm outline-none ring-offset-background focus:ring-2 focus:ring-ring" /></div>
-    {error && <div className="flex items-center justify-between gap-4 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span className="flex items-center gap-2 text-destructive"><AlertCircle className="size-4" /> {error}</span><button onClick={fetchProducts} className="font-semibold underline">Retry</button></div>}
+    {error && <div className="flex items-center justify-between gap-4 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"><span className="flex items-center gap-2 text-destructive"><AlertCircle className="size-4" /> {error}</span><button onClick={() => void fetchProducts()} className="font-semibold underline">Retry</button></div>}
     {loading ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[1,2,3].map((item) => <div key={item} className="h-72 animate-pulse rounded-xl border bg-muted/50" />)}</div> : filtered.length === 0 ? <EmptyState /> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{filtered.map((product) => <ProductCard key={product.id} product={product} onEdit={openEdit} onDelete={setDeleting} onStock={changeStock} />)}</div>}
   </div>
   {formOpen && <ProductForm form={form} setForm={setForm} editing={editing} saving={saving} onClose={() => setFormOpen(false)} onSave={saveProduct} onImage={chooseImage} onOffer={addOffer} />}
